@@ -1,0 +1,12 @@
+# Ambiente virtual
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Databases (são locais, não versionados)
+*.db
+*.db-journal
+
+# OS
+.DS_Store
