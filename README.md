@@ -93,7 +93,7 @@ memory_delete(id="abc123", scope="global")
 
 ### Claude Code
 
-File: `~/.claude/.mcp.json`
+File: `~/.claude/mcp.json`
 
 ```json
 {
