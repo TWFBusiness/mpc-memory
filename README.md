@@ -1,104 +1,106 @@
-# MCP Memoria
+# MCP Memory
 
-Memória persistente para Claude Code com busca semântica e duas camadas de contexto.
+Persistent memory server for AI assistants with semantic search and two-layer context.
 
-## Instalação Rápida
+Works with any MCP-compatible AI: Claude Code, Cursor, Continue, Cline, and more.
+
+## Quick Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TWFBusiness/mpc-memoria/main/install.sh | bash
 ```
 
-Ou manualmente:
+Or manually:
 
 ```bash
-git clone https://github.com/TWFBusiness/mpc-memoria.git ~/.claude/mcp-memoria
-cd ~/.claude/mcp-memoria
+git clone https://github.com/TWFBusiness/mpc-memoria.git ~/.mcp-memoria
+cd ~/.mcp-memoria
 ./install.sh
 ```
 
-Reinicie o Claude Code após instalar.
+## How It Works
 
-## Como Funciona
+### Two Memory Layers
 
-### Duas Camadas de Memória
+| Layer | Location | Use |
+|-------|----------|-----|
+| **Global** | `~/.mcp-memoria/data/` | Personal patterns, preferences across all projects |
+| **Project** | `.mcp-memoria/` | Project-specific decisions |
 
-| Camada | Local | Uso |
-|--------|-------|-----|
-| **Global** | `~/.claude/memoria/` | Padrões pessoais, preferências que valem para todos projetos |
-| **Projeto** | `.claude/memoria/` | Decisões específicas do projeto atual |
+### Smart Search
 
-### Busca Inteligente
+- **FTS5**: Instant text search (always active)
+- **Embeddings**: Semantic search in background (optional, +150MB RAM)
 
-- **FTS5**: Busca textual instantânea (sempre ativo)
-- **Embeddings**: Busca semântica em background (opcional, +150MB RAM)
+With embeddings, searches like "how did I configure auth" find memories about "JWT with refresh token" even without matching words.
 
-Com embeddings, buscas como "como configurei autenticação" encontram memórias sobre "JWT com refresh token" mesmo sem palavras em comum.
+### Background Indexing
 
-### Indexação em Background
+Embeddings are processed asynchronously:
+1. You save a memory → instant response (SQLite)
+2. Background worker generates embedding
+3. Next searches include new content
 
-Embeddings são processados de forma assíncrona:
-1. Você salva uma memória → resposta imediata (SQLite)
-2. Worker em background gera embedding
-3. Próximas buscas já incluem o novo conteúdo
+No blocking or slowdown when saving.
 
-Não há bloqueio ou lentidão ao salvar.
+## Usage
 
-## Uso
-
-### Salvar Memórias
+### Save Memories
 
 ```
-"salve que eu prefiro pytest ao invés de unittest"
-"lembre que neste projeto usamos PostgreSQL com Tortoise ORM"
-"guarde globalmente: sempre usar Black para formatação"
+"save that I prefer pytest over unittest"
+"remember this project uses PostgreSQL with Tortoise ORM"
+"save globally: always use Black for formatting"
 ```
 
-### Buscar Memórias
+### Search Memories
 
 ```
-"o que já decidimos sobre testes?"
-"como configuramos o banco de dados?"
-"quais são meus padrões de código?"
+"what did we decide about tests?"
+"how did we configure the database?"
+"what are my code patterns?"
 ```
 
-### Comandos Diretos (opcional)
+### Direct Commands (optional)
 
 ```
-memoria_salvar(
-  conteudo="FastAPI sempre 100% async, jamais sync",
-  tipo="padrao",
-  escopo="global",
+memory_save(
+  content="FastAPI always 100% async, never sync",
+  type="pattern",
+  scope="global",
   tags="python,fastapi,async"
 )
 
-memoria_buscar(query="autenticação", escopo="ambos")
+memory_search(query="authentication", scope="both")
 
-memoria_listar(tipo="decisao", escopo="projeto", limite=10)
+memory_list(type="decision", scope="project", limit=10)
 
-memoria_deletar(id="abc123", escopo="global")
+memory_delete(id="abc123", scope="global")
 ```
 
-## Tipos de Memória
+## Memory Types
 
-| Tipo | Quando Usar |
+| Type | When to Use |
 |------|-------------|
-| `decisao` | Escolhas técnicas, trade-offs, soluções de bugs |
-| `padrao` | Preferências de código, libs favoritas, estilo |
-| `arquitetura` | Estrutura do projeto, fluxos, integrações |
-| `preferencia` | Configurações pessoais gerais |
-| `todo` | Tarefas pendentes |
-| `nota` | Anotações diversas |
+| `decision` | Technical choices, trade-offs, bug fixes |
+| `pattern` | Code preferences, favorite libs, style |
+| `architecture` | Project structure, flows, integrations |
+| `preference` | General personal settings |
+| `todo` | Pending tasks |
+| `note` | Miscellaneous notes |
 
-## Configuração
+## Configuration
 
-Arquivo: `~/.claude/.mcp.json`
+### Claude Code
+
+File: `~/.claude/.mcp.json`
 
 ```json
 {
   "mcpServers": {
-    "memoria": {
-      "command": "~/.claude/mcp-memoria/.venv/bin/python",
-      "args": ["~/.claude/mcp-memoria/server.py"],
+    "memory": {
+      "command": "~/.mcp-memoria/.venv/bin/python",
+      "args": ["~/.mcp-memoria/server.py"],
       "env": {
         "MEMORIA_EMBEDDING": "true"
       }
@@ -107,80 +109,104 @@ Arquivo: `~/.claude/.mcp.json`
 }
 ```
 
-### Variáveis de Ambiente
+### Cursor
 
-| Variável | Default | Descrição |
-|----------|---------|-----------|
-| `MEMORIA_EMBEDDING` | `true` | Habilita busca semântica |
-| `MEMORIA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Modelo de embedding |
+File: `~/.cursor/mcp.json`
 
-### Modelos de Embedding
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "~/.mcp-memoria/.venv/bin/python",
+      "args": ["~/.mcp-memoria/server.py"],
+      "env": {
+        "MEMORIA_EMBEDDING": "true"
+      }
+    }
+  }
+}
+```
 
-| Modelo | RAM | Qualidade | Idiomas |
-|--------|-----|-----------|---------|
-| `all-MiniLM-L6-v2` | ~80MB | Boa | EN (ok para código) |
-| `paraphrase-multilingual-MiniLM-L12-v2` | ~150MB | Boa | Multi (melhor PT-BR) |
-| `all-mpnet-base-v2` | ~400MB | Excelente | EN |
+### Continue
 
-## Backup e Restauração
+File: `~/.continue/config.json`
 
-### Exportar
+```json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "stdio",
+          "command": "~/.mcp-memoria/.venv/bin/python",
+          "args": ["~/.mcp-memoria/server.py"]
+        }
+      }
+    ]
+  }
+}
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMORIA_EMBEDDING` | `true` | Enable semantic search |
+| `MEMORIA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
+| `MCP_PROJECT_DIR` | (auto) | Override project directory |
+
+### Embedding Models
+
+| Model | RAM | Quality | Languages |
+|-------|-----|---------|-----------|
+| `all-MiniLM-L6-v2` | ~80MB | Good | EN (ok for code) |
+| `paraphrase-multilingual-MiniLM-L12-v2` | ~150MB | Good | Multi (better for non-EN) |
+| `all-mpnet-base-v2` | ~400MB | Excellent | EN |
+
+## Backup and Restore
+
+### Export
 
 ```bash
-# Memórias
-cp ~/.claude/memoria/global.db ~/backup/memoria-global.db
+# Memories
+cp ~/.mcp-memoria/data/global.db ~/backup/memory-global.db
 
-# Preferências
-cp ~/.claude/CLAUDE.md ~/backup/CLAUDE.md
-
-# Memórias de projeto específico
-cp /path/to/projeto/.claude/memoria/projeto.db ~/backup/projeto-x.db
+# Project memories
+cp /path/to/project/.mcp-memoria/project.db ~/backup/project-x.db
 ```
 
-### Importar
+### Import
 
 ```bash
-# Memórias
-cp ~/backup/memoria-global.db ~/.claude/memoria/global.db
-
-# Preferências
-cp ~/backup/CLAUDE.md ~/.claude/CLAUDE.md
+cp ~/backup/memory-global.db ~/.mcp-memoria/data/global.db
 ```
 
-## Estrutura de Arquivos
+## File Structure
 
 ```
-~/.claude/
-├── .mcp.json              # Configuração do MCP server
-├── CLAUDE.md              # Instruções globais (opcional)
-├── memoria/
-│   └── global.db          # SQLite - memórias globais
-└── mcp-memoria/
-    ├── server.py          # Servidor MCP
-    ├── install.sh         # Instalador
-    ├── requirements.txt   # Dependências Python
-    └── .venv/             # Ambiente virtual
+~/.mcp-memoria/
+├── server.py          # MCP server
+├── data/
+│   └── global.db      # SQLite - global memories
+└── .venv/             # Python virtual environment
 
-~/seu-projeto/
-└── .claude/
-    └── memoria/
-        └── projeto.db     # SQLite - memórias do projeto
+~/your-project/
+└── .mcp-memoria/
+    └── project.db     # SQLite - project memories
 ```
 
-## Requisitos
+## Requirements
 
 - Python 3.10+
-- Claude Code CLI
-- ~10MB RAM (FTS only) ou ~150MB RAM (com embeddings)
+- MCP-compatible AI assistant
+- ~10MB RAM (FTS only) or ~150MB RAM (with embeddings)
 
-## Desinstalação
+## Uninstall
 
 ```bash
-rm -rf ~/.claude/mcp-memoria
-rm -rf ~/.claude/memoria
-rm ~/.claude/.mcp.json
+rm -rf ~/.mcp-memoria
 ```
 
-## Licença
+## License
 
 MIT

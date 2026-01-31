@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-MCP Memoria - Servidor de memória persistente para Claude Code
+MCP Memoria - Persistent memory server for AI assistants
 
-Duas camadas:
-- Global: ~/.claude/memoria/ (padrões pessoais, preferências)
-- Projeto: .claude/memoria/ (decisões específicas do projeto)
+Two layers:
+- Global: ~/.mcp-memoria/data/ (personal patterns, preferences)
+- Project: .mcp-memoria/ (project-specific decisions)
 
-Arquitetura inteligente:
-- Busca: FTS5 (instantâneo) + embeddings (se disponíveis)
-- Indexação: background thread (não bloqueia)
-- RAM: ~10MB base, +80MB com embeddings (all-MiniLM-L6-v2)
+Smart architecture:
+- Search: FTS5 (instant) + embeddings (semantic, if available)
+- Indexing: background thread (non-blocking)
+- RAM: ~10MB base, +80MB with embeddings (all-MiniLM-L6-v2)
 """
 
 import os
@@ -30,17 +30,17 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 # ============================================================================
-# CONFIGURAÇÃO
+# CONFIGURATION
 # ============================================================================
 
-GLOBAL_MEMORIA_DIR = Path.home() / ".claude" / "memoria"
+GLOBAL_MEMORIA_DIR = Path.home() / ".mcp-memoria" / "data"
 GLOBAL_DB_PATH = GLOBAL_MEMORIA_DIR / "global.db"
 
 # Embedding config
 EMBEDDING_ENABLED = os.environ.get("MEMORIA_EMBEDDING", "true").lower() == "true"
 EMBEDDING_MODEL = os.environ.get("MEMORIA_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
-# Background queue para indexação
+# Background queue for indexing
 _embedding_queue: queue.Queue = queue.Queue()
 _embedding_thread: Optional[threading.Thread] = None
 _embedding_model = None
@@ -52,7 +52,7 @@ _embedding_model_lock = threading.Lock()
 # ============================================================================
 
 def get_embedding_model():
-    """Carrega modelo de embedding (lazy, thread-safe)"""
+    """Load embedding model (lazy, thread-safe)"""
     global _embedding_model
 
     if not EMBEDDING_ENABLED:
@@ -62,31 +62,31 @@ def get_embedding_model():
         if _embedding_model is None:
             try:
                 from sentence_transformers import SentenceTransformer
-                print(f"[Memoria] Loading embedding model: {EMBEDDING_MODEL}", file=sys.stderr)
+                print(f"[Memory] Loading embedding model: {EMBEDDING_MODEL}", file=sys.stderr)
                 _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-                print(f"[Memoria] Embedding model ready", file=sys.stderr)
+                print(f"[Memory] Embedding model ready", file=sys.stderr)
             except ImportError:
-                print("[Memoria] sentence-transformers not installed, FTS only", file=sys.stderr)
+                print("[Memory] sentence-transformers not installed, FTS only", file=sys.stderr)
                 return None
             except Exception as e:
-                print(f"[Memoria] Embedding load error: {e}", file=sys.stderr)
+                print(f"[Memory] Embedding load error: {e}", file=sys.stderr)
                 return None
         return _embedding_model
 
 
 def embedding_worker():
-    """Worker thread para processar embeddings em background"""
-    print("[Memoria] Background embedding worker started", file=sys.stderr)
+    """Worker thread for background embedding processing"""
+    print("[Memory] Background embedding worker started", file=sys.stderr)
 
     while True:
         try:
-            # Espera item na fila (blocking)
+            # Wait for item in queue (blocking)
             item = _embedding_queue.get(timeout=5)
 
-            if item is None:  # Poison pill para shutdown
+            if item is None:  # Poison pill for shutdown
                 break
 
-            db_path, record_id, conteudo = item
+            db_path, record_id, content = item
 
             model = get_embedding_model()
             if not model:
@@ -94,29 +94,29 @@ def embedding_worker():
 
             try:
                 import numpy as np
-                embedding = model.encode(conteudo)
+                embedding = model.encode(content)
                 embedding_blob = embedding.astype(np.float32).tobytes()
 
                 conn = sqlite3.connect(str(db_path))
                 cursor = conn.cursor()
                 cursor.execute(
-                    "UPDATE memorias SET embedding = ? WHERE id = ?",
+                    "UPDATE memories SET embedding = ? WHERE id = ?",
                     (embedding_blob, record_id)
                 )
                 conn.commit()
                 conn.close()
 
             except Exception as e:
-                print(f"[Memoria] Embedding error for {record_id}: {e}", file=sys.stderr)
+                print(f"[Memory] Embedding error for {record_id}: {e}", file=sys.stderr)
 
         except queue.Empty:
             continue
         except Exception as e:
-            print(f"[Memoria] Worker error: {e}", file=sys.stderr)
+            print(f"[Memory] Worker error: {e}", file=sys.stderr)
 
 
 def start_embedding_worker():
-    """Inicia worker thread se embeddings habilitados"""
+    """Start worker thread if embeddings enabled"""
     global _embedding_thread
 
     if not EMBEDDING_ENABLED:
@@ -127,10 +127,10 @@ def start_embedding_worker():
         _embedding_thread.start()
 
 
-def queue_embedding(db_path: Path, record_id: str, conteudo: str):
-    """Adiciona item na fila para embedding em background"""
+def queue_embedding(db_path: Path, record_id: str, content: str):
+    """Add item to queue for background embedding"""
     if EMBEDDING_ENABLED:
-        _embedding_queue.put((db_path, record_id, conteudo))
+        _embedding_queue.put((db_path, record_id, content))
 
 
 # ============================================================================
@@ -138,32 +138,32 @@ def queue_embedding(db_path: Path, record_id: str, conteudo: str):
 # ============================================================================
 
 def get_project_dir() -> Optional[Path]:
-    """Detecta diretório do projeto atual"""
-    cwd = os.environ.get("CLAUDE_CWD") or os.getcwd()
+    """Detect current project directory"""
+    cwd = os.environ.get("MCP_PROJECT_DIR") or os.environ.get("CLAUDE_CWD") or os.getcwd()
     return Path(cwd) if cwd else None
 
 
 def get_project_db_path() -> Optional[Path]:
-    """Retorna path do banco do projeto atual"""
+    """Return project database path"""
     project_dir = get_project_dir()
     if not project_dir:
         return None
-    memoria_dir = project_dir / ".claude" / "memoria"
-    return memoria_dir / "projeto.db"
+    memoria_dir = project_dir / ".mcp-memoria"
+    return memoria_dir / "project.db"
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
-    """Inicializa banco SQLite com FTS5"""
+    """Initialize SQLite database with FTS5"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Tabela principal
+    # Main table
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS memorias (
+        CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
-            tipo TEXT NOT NULL,
-            conteudo TEXT NOT NULL,
+            type TEXT NOT NULL,
+            content TEXT NOT NULL,
             tags TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -171,100 +171,98 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         )
     """)
 
-    # FTS5 para busca full-text
+    # FTS5 for full-text search
     try:
         cursor.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS memorias_fts USING fts5(
-                conteudo,
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content,
                 tags,
-                content='memorias',
+                content='memories',
                 content_rowid='rowid'
             )
         """)
 
-        # Triggers para manter FTS sincronizado
+        # Triggers to keep FTS in sync
         cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS memorias_ai AFTER INSERT ON memorias BEGIN
-                INSERT INTO memorias_fts(rowid, conteudo, tags)
-                VALUES (NEW.rowid, NEW.conteudo, NEW.tags);
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (NEW.rowid, NEW.content, NEW.tags);
             END
         """)
         cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS memorias_ad AFTER DELETE ON memorias BEGIN
-                INSERT INTO memorias_fts(memorias_fts, rowid, conteudo, tags)
-                VALUES('delete', OLD.rowid, OLD.conteudo, OLD.tags);
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES('delete', OLD.rowid, OLD.content, OLD.tags);
             END
         """)
         cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS memorias_au AFTER UPDATE ON memorias BEGIN
-                INSERT INTO memorias_fts(memorias_fts, rowid, conteudo, tags)
-                VALUES('delete', OLD.rowid, OLD.conteudo, OLD.tags);
-                INSERT INTO memorias_fts(rowid, conteudo, tags)
-                VALUES (NEW.rowid, NEW.conteudo, NEW.tags);
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES('delete', OLD.rowid, OLD.content, OLD.tags);
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (NEW.rowid, NEW.content, NEW.tags);
             END
         """)
     except Exception as e:
-        print(f"[Memoria] FTS5 setup warning: {e}", file=sys.stderr)
+        print(f"[Memory] FTS5 setup warning: {e}", file=sys.stderr)
 
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tipo ON memorias(tipo)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_created ON memorias(created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_type ON memories(type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_created ON memories(created_at)")
 
     conn.commit()
     return conn
 
 
-def generate_id(conteudo: str, tipo: str) -> str:
-    """Gera ID único baseado no conteúdo"""
-    hash_input = f"{tipo}:{conteudo}:{datetime.now().isoformat()}"
+def generate_id(content: str, type: str) -> str:
+    """Generate unique ID based on content"""
+    hash_input = f"{type}:{content}:{datetime.now().isoformat()}"
     return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
 
 
 # ============================================================================
-# BUSCA
+# SEARCH
 # ============================================================================
 
-def buscar_fts(conn: sqlite3.Connection, query: str, limite: int = 10) -> list:
-    """Busca usando FTS5 (instantâneo)"""
+def search_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list:
+    """Search using FTS5 (instant)"""
     cursor = conn.cursor()
 
     try:
-        # Tokeniza query para FTS5
         tokens = query.split()
         if not tokens:
             return []
 
-        # Busca com OR para ser mais flexível
         fts_query = " OR ".join(f'"{t}"' for t in tokens if t)
 
         cursor.execute("""
-            SELECT m.id, m.tipo, m.conteudo, m.tags, m.created_at,
-                   bm25(memorias_fts) as relevancia
-            FROM memorias_fts f
-            JOIN memorias m ON f.rowid = m.rowid
-            WHERE memorias_fts MATCH ?
-            ORDER BY relevancia
+            SELECT m.id, m.type, m.content, m.tags, m.created_at,
+                   bm25(memories_fts) as relevance
+            FROM memories_fts f
+            JOIN memories m ON f.rowid = m.rowid
+            WHERE memories_fts MATCH ?
+            ORDER BY relevance
             LIMIT ?
-        """, (fts_query, limite))
+        """, (fts_query, limit))
 
         return [
             {
                 "id": row[0],
-                "tipo": row[1],
-                "conteudo": row[2],
+                "type": row[1],
+                "content": row[2],
                 "tags": row[3],
                 "created_at": row[4],
-                "relevancia": round(abs(row[5]), 3),
-                "metodo": "fts"
+                "relevance": round(abs(row[5]), 3),
+                "method": "fts"
             }
             for row in cursor.fetchall()
         ]
     except Exception as e:
-        print(f"[Memoria] FTS search error: {e}", file=sys.stderr)
+        print(f"[Memory] FTS search error: {e}", file=sys.stderr)
         return []
 
 
-def buscar_embedding(conn: sqlite3.Connection, query: str, limite: int = 10) -> list:
-    """Busca usando embeddings (semântica)"""
+def search_embedding(conn: sqlite3.Connection, query: str, limit: int = 10) -> list:
+    """Search using embeddings (semantic)"""
     model = get_embedding_model()
     if not model:
         return []
@@ -275,224 +273,222 @@ def buscar_embedding(conn: sqlite3.Connection, query: str, limite: int = 10) -> 
 
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, tipo, conteudo, tags, created_at, embedding
-            FROM memorias
+            SELECT id, type, content, tags, created_at, embedding
+            FROM memories
             WHERE embedding IS NOT NULL
         """)
 
-        resultados = []
+        results = []
         for row in cursor.fetchall():
             if row[5]:
                 stored_embedding = np.frombuffer(row[5], dtype=np.float32)
-                # Similaridade cosseno
                 similarity = float(np.dot(query_embedding, stored_embedding) / (
                     np.linalg.norm(query_embedding) * np.linalg.norm(stored_embedding) + 1e-8
                 ))
-                if similarity > 0.3:  # Threshold mínimo
-                    resultados.append({
+                if similarity > 0.3:  # Minimum threshold
+                    results.append({
                         "id": row[0],
-                        "tipo": row[1],
-                        "conteudo": row[2],
+                        "type": row[1],
+                        "content": row[2],
                         "tags": row[3],
                         "created_at": row[4],
-                        "relevancia": round(similarity, 3),
-                        "metodo": "embedding"
+                        "relevance": round(similarity, 3),
+                        "method": "embedding"
                     })
 
-        resultados.sort(key=lambda x: x["relevancia"], reverse=True)
-        return resultados[:limite]
+        results.sort(key=lambda x: x["relevance"], reverse=True)
+        return results[:limit]
     except Exception as e:
-        print(f"[Memoria] Embedding search error: {e}", file=sys.stderr)
+        print(f"[Memory] Embedding search error: {e}", file=sys.stderr)
         return []
 
 
-def buscar_hibrido(conn: sqlite3.Connection, query: str, limite: int = 10) -> list:
-    """Busca híbrida: FTS + embeddings, mescla resultados"""
-    fts_results = buscar_fts(conn, query, limite)
-    emb_results = buscar_embedding(conn, query, limite)
+def search_hybrid(conn: sqlite3.Connection, query: str, limit: int = 10) -> list:
+    """Hybrid search: FTS + embeddings, merge results"""
+    fts_results = search_fts(conn, query, limit)
+    emb_results = search_embedding(conn, query, limit)
 
-    # Mescla resultados, removendo duplicatas
     seen_ids = set()
     merged = []
 
-    # Prioriza embeddings (mais semântico)
+    # Prioritize embeddings (more semantic)
     for r in emb_results:
         if r["id"] not in seen_ids:
             seen_ids.add(r["id"])
             merged.append(r)
 
-    # Adiciona FTS que não estão nos embeddings
+    # Add FTS results not in embeddings
     for r in fts_results:
         if r["id"] not in seen_ids:
             seen_ids.add(r["id"])
             merged.append(r)
 
-    return merged[:limite]
+    return merged[:limit]
 
 
 # ============================================================================
-# OPERAÇÕES
+# OPERATIONS
 # ============================================================================
 
-def salvar_memoria(db_path: Path, tipo: str, conteudo: str, tags: str = "") -> dict:
-    """Salva memória (sync SQLite + async embedding)"""
-    id = generate_id(conteudo, tipo)
+def save_memory(db_path: Path, type: str, content: str, tags: str = "") -> dict:
+    """Save memory (sync SQLite + async embedding)"""
+    id = generate_id(content, type)
 
     conn = init_db(db_path)
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT OR REPLACE INTO memorias (id, tipo, conteudo, tags, updated_at)
+        INSERT OR REPLACE INTO memories (id, type, content, tags, updated_at)
         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, (id, tipo, conteudo, tags))
+    """, (id, type, content, tags))
 
     conn.commit()
     conn.close()
 
-    # Agenda embedding em background
-    queue_embedding(db_path, id, conteudo)
+    # Queue embedding in background
+    queue_embedding(db_path, id, content)
 
-    return {"id": id, "tipo": tipo, "saved": True}
+    return {"id": id, "type": type, "saved": True}
 
 
-def listar_memorias(conn: sqlite3.Connection, tipo: Optional[str] = None, limite: int = 20) -> list:
-    """Lista memórias recentes"""
+def list_memories(conn: sqlite3.Connection, type: Optional[str] = None, limit: int = 20) -> list:
+    """List recent memories"""
     cursor = conn.cursor()
 
-    if tipo:
+    if type:
         cursor.execute("""
-            SELECT id, tipo, conteudo, tags, created_at
-            FROM memorias WHERE tipo = ?
+            SELECT id, type, content, tags, created_at
+            FROM memories WHERE type = ?
             ORDER BY updated_at DESC LIMIT ?
-        """, (tipo, limite))
+        """, (type, limit))
     else:
         cursor.execute("""
-            SELECT id, tipo, conteudo, tags, created_at
-            FROM memorias ORDER BY updated_at DESC LIMIT ?
-        """, (limite,))
+            SELECT id, type, content, tags, created_at
+            FROM memories ORDER BY updated_at DESC LIMIT ?
+        """, (limit,))
 
     return [
-        {"id": row[0], "tipo": row[1], "conteudo": row[2], "tags": row[3], "created_at": row[4]}
+        {"id": row[0], "type": row[1], "content": row[2], "tags": row[3], "created_at": row[4]}
         for row in cursor.fetchall()
     ]
 
 
 def get_stats(db_path: Path) -> dict:
-    """Estatísticas do banco"""
+    """Get database statistics"""
     try:
         conn = init_db(db_path)
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) FROM memorias")
+        cursor.execute("SELECT COUNT(*) FROM memories")
         total = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM memorias WHERE embedding IS NOT NULL")
+        cursor.execute("SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL")
         indexed = cursor.fetchone()[0]
 
-        cursor.execute("SELECT tipo, COUNT(*) FROM memorias GROUP BY tipo")
-        por_tipo = {row[0]: row[1] for row in cursor.fetchall()}
+        cursor.execute("SELECT type, COUNT(*) FROM memories GROUP BY type")
+        by_type = {row[0]: row[1] for row in cursor.fetchall()}
 
         conn.close()
-        return {"total": total, "indexed": indexed, "por_tipo": por_tipo}
+        return {"total": total, "indexed": indexed, "by_type": by_type}
     except:
-        return {"total": 0, "indexed": 0, "por_tipo": {}}
+        return {"total": 0, "indexed": 0, "by_type": {}}
 
 
 # ============================================================================
 # MCP SERVER
 # ============================================================================
 
-server = Server("memoria")
+server = Server("memory")
 
 
 @server.list_tools()
 async def list_tools():
-    """Lista ferramentas disponíveis"""
+    """List available tools"""
     return [
         Tool(
-            name="memoria_contexto",
-            description="USAR AUTOMATICAMENTE no início de cada conversa. Retorna memórias relevantes para o contexto atual (projeto + global). Funciona como um 'recall' automático.",
+            name="memory_context",
+            description="USE AUTOMATICALLY at the start of each conversation. Returns relevant memories for the current context (project + global). Works as an automatic 'recall'.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Contexto atual ou pergunta do usuário"
+                        "description": "Current context or user question"
                     }
                 },
                 "required": ["query"]
             }
         ),
         Tool(
-            name="memoria_buscar",
-            description="Busca memórias específicas quando precisar de informação detalhada sobre decisões passadas, padrões ou preferências.",
+            name="memory_search",
+            description="Search specific memories when you need detailed information about past decisions, patterns, or preferences.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Termo de busca"},
-                    "escopo": {
+                    "query": {"type": "string", "description": "Search term"},
+                    "scope": {
                         "type": "string",
-                        "enum": ["global", "projeto", "ambos"],
-                        "default": "ambos"
+                        "enum": ["global", "project", "both"],
+                        "default": "both"
                     },
-                    "limite": {"type": "integer", "default": 5}
+                    "limit": {"type": "integer", "default": 5}
                 },
                 "required": ["query"]
             }
         ),
         Tool(
-            name="memoria_salvar",
-            description="Salva decisão, padrão ou preferência importante. Use após: (1) tomar decisões de arquitetura, (2) definir padrões de código, (3) aprender preferências do usuário.",
+            name="memory_save",
+            description="Save important decision, pattern, or preference. Use after: (1) making architecture decisions, (2) defining code patterns, (3) learning user preferences.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "conteudo": {"type": "string", "description": "O que salvar"},
-                    "tipo": {
+                    "content": {"type": "string", "description": "What to save"},
+                    "type": {
                         "type": "string",
-                        "enum": ["decisao", "padrao", "preferencia", "arquitetura", "todo", "nota"]
+                        "enum": ["decision", "pattern", "preference", "architecture", "todo", "note"]
                     },
-                    "escopo": {
+                    "scope": {
                         "type": "string",
-                        "enum": ["global", "projeto"],
-                        "default": "projeto"
+                        "enum": ["global", "project"],
+                        "default": "project"
                     },
-                    "tags": {"type": "string", "description": "Tags separadas por vírgula"}
+                    "tags": {"type": "string", "description": "Comma-separated tags"}
                 },
-                "required": ["conteudo", "tipo"]
+                "required": ["content", "type"]
             }
         ),
         Tool(
-            name="memoria_listar",
-            description="Lista memórias recentes. Útil para revisar histórico de decisões.",
+            name="memory_list",
+            description="List recent memories. Useful to review decision history.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "tipo": {
+                    "type": {
                         "type": "string",
-                        "enum": ["decisao", "padrao", "preferencia", "arquitetura", "todo", "nota"]
+                        "enum": ["decision", "pattern", "preference", "architecture", "todo", "note"]
                     },
-                    "escopo": {
+                    "scope": {
                         "type": "string",
-                        "enum": ["global", "projeto", "ambos"],
-                        "default": "ambos"
+                        "enum": ["global", "project", "both"],
+                        "default": "both"
                     },
-                    "limite": {"type": "integer", "default": 10}
+                    "limit": {"type": "integer", "default": 10}
                 }
             }
         ),
         Tool(
-            name="memoria_stats",
-            description="Mostra estatísticas da memória (total, indexados, por tipo).",
+            name="memory_stats",
+            description="Show memory statistics (total, indexed, by type).",
             inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
-            name="memoria_deletar",
-            description="Remove uma memória pelo ID.",
+            name="memory_delete",
+            description="Remove a memory by ID.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "escopo": {"type": "string", "enum": ["global", "projeto"], "default": "projeto"}
+                    "scope": {"type": "string", "enum": ["global", "project"], "default": "project"}
                 },
                 "required": ["id"]
             }
@@ -502,200 +498,198 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
-    """Executa ferramenta"""
+    """Execute tool"""
 
-    # ========== CONTEXTO (auto-recall) ==========
-    if name == "memoria_contexto":
+    # ========== CONTEXT (auto-recall) ==========
+    if name == "memory_context":
         query = arguments.get("query", "")
-        resultados = []
+        results = []
 
-        # Busca em ambos os escopos
-        for escopo, db_path in [("global", GLOBAL_DB_PATH), ("projeto", get_project_db_path())]:
-            if db_path and (db_path.exists() or escopo == "global"):
+        for scope, db_path in [("global", GLOBAL_DB_PATH), ("project", get_project_db_path())]:
+            if db_path and (db_path.exists() or scope == "global"):
                 try:
                     conn = init_db(db_path)
-                    for r in buscar_hibrido(conn, query, limite=5):
-                        r["escopo"] = escopo
-                        resultados.append(r)
+                    for r in search_hybrid(conn, query, limit=5):
+                        r["scope"] = scope
+                        results.append(r)
                     conn.close()
                 except Exception as e:
-                    print(f"[Memoria] Context search error ({escopo}): {e}", file=sys.stderr)
+                    print(f"[Memory] Context search error ({scope}): {e}", file=sys.stderr)
 
-        if not resultados:
-            return [TextContent(type="text", text="[Memoria] Nenhum contexto relevante encontrado.")]
+        if not results:
+            return [TextContent(type="text", text="[Memory] No relevant context found.")]
 
-        # Ordena por relevância
-        resultados.sort(key=lambda x: x.get("relevancia", 0), reverse=True)
-        resultados = resultados[:8]
+        results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+        results = results[:8]
 
-        output = "## Contexto da Memória\n\n"
-        for r in resultados:
-            output += f"**[{r['escopo']}:{r['tipo']}]** {r['conteudo']}\n"
-        output += "\n---\n_Use este contexto para informar suas respostas._"
+        output = "## Memory Context\n\n"
+        for r in results:
+            output += f"**[{r['scope']}:{r['type']}]** {r['content']}\n"
+        output += "\n---\n_Use this context to inform your responses._"
 
         return [TextContent(type="text", text=output)]
 
-    # ========== BUSCAR ==========
-    elif name == "memoria_buscar":
+    # ========== SEARCH ==========
+    elif name == "memory_search":
         query = arguments.get("query", "")
-        escopo = arguments.get("escopo", "ambos")
-        limite = arguments.get("limite", 5)
+        scope = arguments.get("scope", "both")
+        limit = arguments.get("limit", 5)
 
-        resultados = []
+        results = []
 
-        if escopo in ["global", "ambos"]:
+        if scope in ["global", "both"]:
             try:
                 conn = init_db(GLOBAL_DB_PATH)
-                for r in buscar_hibrido(conn, query, limite):
-                    r["escopo"] = "global"
-                    resultados.append(r)
+                for r in search_hybrid(conn, query, limit):
+                    r["scope"] = "global"
+                    results.append(r)
                 conn.close()
             except Exception as e:
-                print(f"[Memoria] Global search error: {e}", file=sys.stderr)
+                print(f"[Memory] Global search error: {e}", file=sys.stderr)
 
-        if escopo in ["projeto", "ambos"]:
+        if scope in ["project", "both"]:
             project_db = get_project_db_path()
             if project_db:
                 try:
                     conn = init_db(project_db)
-                    for r in buscar_hibrido(conn, query, limite):
-                        r["escopo"] = "projeto"
-                        resultados.append(r)
+                    for r in search_hybrid(conn, query, limit):
+                        r["scope"] = "project"
+                        results.append(r)
                     conn.close()
                 except Exception as e:
-                    print(f"[Memoria] Project search error: {e}", file=sys.stderr)
+                    print(f"[Memory] Project search error: {e}", file=sys.stderr)
 
-        resultados.sort(key=lambda x: x.get("relevancia", 0), reverse=True)
-        resultados = resultados[:limite]
+        results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+        results = results[:limit]
 
-        if not resultados:
-            return [TextContent(type="text", text="Nenhuma memória encontrada.")]
+        if not results:
+            return [TextContent(type="text", text="No memories found.")]
 
-        output = f"## Memórias ({len(resultados)})\n\n"
-        for r in resultados:
-            output += f"**[{r['escopo'].upper()}] {r['tipo']}** (relevância: {r['relevancia']}, método: {r.get('metodo', '?')})\n"
-            output += f"{r['conteudo']}\n"
+        output = f"## Memories ({len(results)})\n\n"
+        for r in results:
+            output += f"**[{r['scope'].upper()}] {r['type']}** (relevance: {r['relevance']}, method: {r.get('method', '?')})\n"
+            output += f"{r['content']}\n"
             if r.get('tags'):
                 output += f"_Tags: {r['tags']}_\n"
             output += "\n"
 
         return [TextContent(type="text", text=output)]
 
-    # ========== SALVAR ==========
-    elif name == "memoria_salvar":
-        conteudo = arguments.get("conteudo", "")
-        tipo = arguments.get("tipo", "nota")
-        escopo = arguments.get("escopo", "projeto")
+    # ========== SAVE ==========
+    elif name == "memory_save":
+        content = arguments.get("content", "")
+        type = arguments.get("type", "note")
+        scope = arguments.get("scope", "project")
         tags = arguments.get("tags", "")
 
-        if not conteudo:
-            return [TextContent(type="text", text="Erro: conteúdo vazio.")]
+        if not content:
+            return [TextContent(type="text", text="Error: empty content.")]
 
-        db_path = GLOBAL_DB_PATH if escopo == "global" else get_project_db_path()
+        db_path = GLOBAL_DB_PATH if scope == "global" else get_project_db_path()
         if not db_path:
-            return [TextContent(type="text", text="Erro: projeto não detectado.")]
+            return [TextContent(type="text", text="Error: project not detected.")]
 
         try:
-            result = salvar_memoria(db_path, tipo, conteudo, tags)
+            result = save_memory(db_path, type, content, tags)
             return [TextContent(
                 type="text",
-                text=f"✓ Memória salva ({escopo})\n- Tipo: {tipo}\n- ID: {result['id']}\n- Embedding: {'em background' if EMBEDDING_ENABLED else 'desabilitado'}"
+                text=f"✓ Memory saved ({scope})\n- Type: {type}\n- ID: {result['id']}\n- Embedding: {'queued' if EMBEDDING_ENABLED else 'disabled'}"
             )]
         except Exception as e:
-            return [TextContent(type="text", text=f"Erro: {e}")]
+            return [TextContent(type="text", text=f"Error: {e}")]
 
-    # ========== LISTAR ==========
-    elif name == "memoria_listar":
-        tipo = arguments.get("tipo")
-        escopo = arguments.get("escopo", "ambos")
-        limite = arguments.get("limite", 10)
+    # ========== LIST ==========
+    elif name == "memory_list":
+        type = arguments.get("type")
+        scope = arguments.get("scope", "both")
+        limit = arguments.get("limit", 10)
 
-        resultados = []
+        results = []
 
-        if escopo in ["global", "ambos"]:
+        if scope in ["global", "both"]:
             try:
                 conn = init_db(GLOBAL_DB_PATH)
-                for r in listar_memorias(conn, tipo, limite):
-                    r["escopo"] = "global"
-                    resultados.append(r)
+                for r in list_memories(conn, type, limit):
+                    r["scope"] = "global"
+                    results.append(r)
                 conn.close()
             except Exception as e:
-                print(f"[Memoria] Global list error: {e}", file=sys.stderr)
+                print(f"[Memory] Global list error: {e}", file=sys.stderr)
 
-        if escopo in ["projeto", "ambos"]:
+        if scope in ["project", "both"]:
             project_db = get_project_db_path()
             if project_db:
                 try:
                     conn = init_db(project_db)
-                    for r in listar_memorias(conn, tipo, limite):
-                        r["escopo"] = "projeto"
-                        resultados.append(r)
+                    for r in list_memories(conn, type, limit):
+                        r["scope"] = "project"
+                        results.append(r)
                     conn.close()
                 except Exception as e:
-                    print(f"[Memoria] Project list error: {e}", file=sys.stderr)
+                    print(f"[Memory] Project list error: {e}", file=sys.stderr)
 
-        if not resultados:
-            return [TextContent(type="text", text="Nenhuma memória encontrada.")]
+        if not results:
+            return [TextContent(type="text", text="No memories found.")]
 
-        output = f"## Memórias ({len(resultados)})\n\n"
-        for r in resultados:
-            output += f"- **[{r['escopo']}] {r['tipo']}**: {r['conteudo'][:80]}{'...' if len(r['conteudo']) > 80 else ''}\n"
+        output = f"## Memories ({len(results)})\n\n"
+        for r in results:
+            output += f"- **[{r['scope']}] {r['type']}**: {r['content'][:80]}{'...' if len(r['content']) > 80 else ''}\n"
             output += f"  `{r['id']}` | {r['created_at']}\n\n"
 
         return [TextContent(type="text", text=output)]
 
     # ========== STATS ==========
-    elif name == "memoria_stats":
-        output = "## Estatísticas da Memória\n\n"
+    elif name == "memory_stats":
+        output = "## Memory Statistics\n\n"
 
         global_stats = get_stats(GLOBAL_DB_PATH)
         output += f"**Global** ({GLOBAL_DB_PATH}):\n"
         output += f"- Total: {global_stats['total']}\n"
-        output += f"- Indexados (embedding): {global_stats['indexed']}\n"
-        output += f"- Por tipo: {global_stats['por_tipo']}\n\n"
+        output += f"- Indexed (embedding): {global_stats['indexed']}\n"
+        output += f"- By type: {global_stats['by_type']}\n\n"
 
         project_db = get_project_db_path()
         if project_db and project_db.exists():
             proj_stats = get_stats(project_db)
-            output += f"**Projeto** ({project_db}):\n"
+            output += f"**Project** ({project_db}):\n"
             output += f"- Total: {proj_stats['total']}\n"
-            output += f"- Indexados (embedding): {proj_stats['indexed']}\n"
-            output += f"- Por tipo: {proj_stats['por_tipo']}\n\n"
+            output += f"- Indexed (embedding): {proj_stats['indexed']}\n"
+            output += f"- By type: {proj_stats['by_type']}\n\n"
 
         output += f"**Config**:\n"
-        output += f"- Embeddings: {'habilitado' if EMBEDDING_ENABLED else 'desabilitado'}\n"
-        output += f"- Modelo: {EMBEDDING_MODEL}\n"
-        output += f"- Queue pendente: {_embedding_queue.qsize()}\n"
+        output += f"- Embeddings: {'enabled' if EMBEDDING_ENABLED else 'disabled'}\n"
+        output += f"- Model: {EMBEDDING_MODEL}\n"
+        output += f"- Queue pending: {_embedding_queue.qsize()}\n"
 
         return [TextContent(type="text", text=output)]
 
-    # ========== DELETAR ==========
-    elif name == "memoria_deletar":
+    # ========== DELETE ==========
+    elif name == "memory_delete":
         id = arguments.get("id", "")
-        escopo = arguments.get("escopo", "projeto")
+        scope = arguments.get("scope", "project")
 
         if not id:
-            return [TextContent(type="text", text="Erro: ID obrigatório.")]
+            return [TextContent(type="text", text="Error: ID required.")]
 
-        db_path = GLOBAL_DB_PATH if escopo == "global" else get_project_db_path()
+        db_path = GLOBAL_DB_PATH if scope == "global" else get_project_db_path()
         if not db_path:
-            return [TextContent(type="text", text="Erro: projeto não detectado.")]
+            return [TextContent(type="text", text="Error: project not detected.")]
 
         try:
             conn = init_db(db_path)
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM memorias WHERE id = ?", (id,))
+            cursor.execute("DELETE FROM memories WHERE id = ?", (id,))
             deleted = cursor.rowcount
             conn.commit()
             conn.close()
 
             if deleted:
-                return [TextContent(type="text", text=f"✓ Memória {id} deletada.")]
-            return [TextContent(type="text", text=f"Memória {id} não encontrada.")]
+                return [TextContent(type="text", text=f"✓ Memory {id} deleted.")]
+            return [TextContent(type="text", text=f"Memory {id} not found.")]
         except Exception as e:
-            return [TextContent(type="text", text=f"Erro: {e}")]
+            return [TextContent(type="text", text=f"Error: {e}")]
 
-    return [TextContent(type="text", text=f"Ferramenta desconhecida: {name}")]
+    return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
 # ============================================================================
@@ -703,21 +697,21 @@ async def call_tool(name: str, arguments: dict):
 # ============================================================================
 
 async def main():
-    """Inicia servidor MCP"""
-    print("[Memoria] ============================================", file=sys.stderr)
-    print("[Memoria] MCP Memoria Server Starting", file=sys.stderr)
-    print(f"[Memoria] Global DB: {GLOBAL_DB_PATH}", file=sys.stderr)
-    print(f"[Memoria] Embeddings: {'enabled' if EMBEDDING_ENABLED else 'disabled'}", file=sys.stderr)
-    print(f"[Memoria] Model: {EMBEDDING_MODEL}", file=sys.stderr)
-    print("[Memoria] ============================================", file=sys.stderr)
+    """Start MCP server"""
+    print("[Memory] ============================================", file=sys.stderr)
+    print("[Memory] MCP Memory Server Starting", file=sys.stderr)
+    print(f"[Memory] Global DB: {GLOBAL_DB_PATH}", file=sys.stderr)
+    print(f"[Memory] Embeddings: {'enabled' if EMBEDDING_ENABLED else 'disabled'}", file=sys.stderr)
+    print(f"[Memory] Model: {EMBEDDING_MODEL}", file=sys.stderr)
+    print("[Memory] ============================================", file=sys.stderr)
 
-    # Inicializa banco global
+    # Initialize global database
     init_db(GLOBAL_DB_PATH)
 
-    # Inicia worker de embedding em background
+    # Start embedding worker in background
     start_embedding_worker()
 
-    # Pre-load do modelo de embedding (em background)
+    # Pre-load embedding model (in background)
     if EMBEDDING_ENABLED:
         threading.Thread(target=get_embedding_model, daemon=True).start()
 
