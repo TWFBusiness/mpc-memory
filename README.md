@@ -102,7 +102,7 @@ File: `~/.claude/.mcp.json`
       "command": "~/.mcp-memoria/.venv/bin/python",
       "args": ["~/.mcp-memoria/server.py"],
       "env": {
-        "MEMORIA_EMBEDDING": "true"
+        "MCP_MEMORY_EMBEDDING": "true"
       }
     }
   }
@@ -120,7 +120,7 @@ File: `~/.cursor/mcp.json`
       "command": "~/.mcp-memoria/.venv/bin/python",
       "args": ["~/.mcp-memoria/server.py"],
       "env": {
-        "MEMORIA_EMBEDDING": "true"
+        "MCP_MEMORY_EMBEDDING": "true"
       }
     }
   }
@@ -151,8 +151,8 @@ File: `~/.continue/config.json`
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MEMORIA_EMBEDDING` | `true` | Enable semantic search |
-| `MEMORIA_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
+| `MCP_MEMORY_EMBEDDING` | `true` | Enable semantic search |
+| `MCP_MEMORY_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `MCP_PROJECT_DIR` | (auto) | Override project directory |
 
 ### Embedding Models

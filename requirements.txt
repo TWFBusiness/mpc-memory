@@ -1,9 +1,9 @@
-# MCP Memoria - Dependências
+# MCP Memory - Dependencies
 
-# Core (obrigatório)
+# Core (required)
 mcp>=1.0.0
 
-# Embeddings (opcional - instalado pelo install.sh se escolhido)
-# Adiciona busca semântica, +150MB RAM
+# Embeddings (optional - installed by install.sh if chosen)
+# Adds semantic search, +150MB RAM
 # sentence-transformers>=2.2.0
 # numpy>=1.24.0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP Memoria - Persistent memory server for AI assistants
+MCP Memory - Persistent memory server for AI assistants
 
 Two layers:
 - Global: ~/.mcp-memoria/data/ (personal patterns, preferences)
@@ -14,7 +14,6 @@ Smart architecture:
 
 import os
 import sys
-import json
 import sqlite3
 import hashlib
 import threading
@@ -33,12 +32,12 @@ from mcp.types import Tool, TextContent
 # CONFIGURATION
 # ============================================================================
 
-GLOBAL_MEMORIA_DIR = Path.home() / ".mcp-memoria" / "data"
-GLOBAL_DB_PATH = GLOBAL_MEMORIA_DIR / "global.db"
+GLOBAL_MEMORY_DIR = Path.home() / ".mcp-memoria" / "data"
+GLOBAL_DB_PATH = GLOBAL_MEMORY_DIR / "global.db"
 
 # Embedding config
-EMBEDDING_ENABLED = os.environ.get("MEMORIA_EMBEDDING", "true").lower() == "true"
-EMBEDDING_MODEL = os.environ.get("MEMORIA_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_ENABLED = os.environ.get("MCP_MEMORY_EMBEDDING", "true").lower() == "true"
+EMBEDDING_MODEL = os.environ.get("MCP_MEMORY_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 # Background queue for indexing
 _embedding_queue: queue.Queue = queue.Queue()
@@ -64,7 +63,7 @@ def get_embedding_model():
                 from sentence_transformers import SentenceTransformer
                 print(f"[Memory] Loading embedding model: {EMBEDDING_MODEL}", file=sys.stderr)
                 _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
-                print(f"[Memory] Embedding model ready", file=sys.stderr)
+                print("[Memory] Embedding model ready", file=sys.stderr)
             except ImportError:
                 print("[Memory] sentence-transformers not installed, FTS only", file=sys.stderr)
                 return None
@@ -80,7 +79,6 @@ def embedding_worker():
 
     while True:
         try:
-            # Wait for item in queue (blocking)
             item = _embedding_queue.get(timeout=5)
 
             if item is None:  # Poison pill for shutdown
@@ -148,8 +146,8 @@ def get_project_db_path() -> Optional[Path]:
     project_dir = get_project_dir()
     if not project_dir:
         return None
-    memoria_dir = project_dir / ".mcp-memoria"
-    return memoria_dir / "project.db"
+    memory_dir = project_dir / ".mcp-memoria"
+    return memory_dir / "project.db"
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
@@ -213,9 +211,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def generate_id(content: str, type: str) -> str:
+def generate_id(content: str, mem_type: str) -> str:
     """Generate unique ID based on content"""
-    hash_input = f"{type}:{content}:{datetime.now().isoformat()}"
+    hash_input = f"{mem_type}:{content}:{datetime.now().isoformat()}"
     return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
 
 
@@ -330,9 +328,9 @@ def search_hybrid(conn: sqlite3.Connection, query: str, limit: int = 10) -> list
 # OPERATIONS
 # ============================================================================
 
-def save_memory(db_path: Path, type: str, content: str, tags: str = "") -> dict:
+def save_memory(db_path: Path, mem_type: str, content: str, tags: str = "") -> dict:
     """Save memory (sync SQLite + async embedding)"""
-    id = generate_id(content, type)
+    mem_id = generate_id(content, mem_type)
 
     conn = init_db(db_path)
     cursor = conn.cursor()
@@ -340,27 +338,27 @@ def save_memory(db_path: Path, type: str, content: str, tags: str = "") -> dict:
     cursor.execute("""
         INSERT OR REPLACE INTO memories (id, type, content, tags, updated_at)
         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, (id, type, content, tags))
+    """, (mem_id, mem_type, content, tags))
 
     conn.commit()
     conn.close()
 
     # Queue embedding in background
-    queue_embedding(db_path, id, content)
+    queue_embedding(db_path, mem_id, content)
 
-    return {"id": id, "type": type, "saved": True}
+    return {"id": mem_id, "type": mem_type, "saved": True}
 
 
-def list_memories(conn: sqlite3.Connection, type: Optional[str] = None, limit: int = 20) -> list:
+def list_memories(conn: sqlite3.Connection, mem_type: Optional[str] = None, limit: int = 20) -> list:
     """List recent memories"""
     cursor = conn.cursor()
 
-    if type:
+    if mem_type:
         cursor.execute("""
             SELECT id, type, content, tags, created_at
             FROM memories WHERE type = ?
             ORDER BY updated_at DESC LIMIT ?
-        """, (type, limit))
+        """, (mem_type, limit))
     else:
         cursor.execute("""
             SELECT id, type, content, tags, created_at
@@ -578,7 +576,7 @@ async def call_tool(name: str, arguments: dict):
     # ========== SAVE ==========
     elif name == "memory_save":
         content = arguments.get("content", "")
-        type = arguments.get("type", "note")
+        mem_type = arguments.get("type", "note")
         scope = arguments.get("scope", "project")
         tags = arguments.get("tags", "")
 
@@ -590,17 +588,17 @@ async def call_tool(name: str, arguments: dict):
             return [TextContent(type="text", text="Error: project not detected.")]
 
         try:
-            result = save_memory(db_path, type, content, tags)
+            result = save_memory(db_path, mem_type, content, tags)
             return [TextContent(
                 type="text",
-                text=f"✓ Memory saved ({scope})\n- Type: {type}\n- ID: {result['id']}\n- Embedding: {'queued' if EMBEDDING_ENABLED else 'disabled'}"
+                text=f"Memory saved ({scope})\n- Type: {mem_type}\n- ID: {result['id']}\n- Embedding: {'queued' if EMBEDDING_ENABLED else 'disabled'}"
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {e}")]
 
     # ========== LIST ==========
     elif name == "memory_list":
-        type = arguments.get("type")
+        mem_type = arguments.get("type")
         scope = arguments.get("scope", "both")
         limit = arguments.get("limit", 10)
 
@@ -609,7 +607,7 @@ async def call_tool(name: str, arguments: dict):
         if scope in ["global", "both"]:
             try:
                 conn = init_db(GLOBAL_DB_PATH)
-                for r in list_memories(conn, type, limit):
+                for r in list_memories(conn, mem_type, limit):
                     r["scope"] = "global"
                     results.append(r)
                 conn.close()
@@ -621,7 +619,7 @@ async def call_tool(name: str, arguments: dict):
             if project_db:
                 try:
                     conn = init_db(project_db)
-                    for r in list_memories(conn, type, limit):
+                    for r in list_memories(conn, mem_type, limit):
                         r["scope"] = "project"
                         results.append(r)
                     conn.close()
@@ -656,7 +654,7 @@ async def call_tool(name: str, arguments: dict):
             output += f"- Indexed (embedding): {proj_stats['indexed']}\n"
             output += f"- By type: {proj_stats['by_type']}\n\n"
 
-        output += f"**Config**:\n"
+        output += "**Config**:\n"
         output += f"- Embeddings: {'enabled' if EMBEDDING_ENABLED else 'disabled'}\n"
         output += f"- Model: {EMBEDDING_MODEL}\n"
         output += f"- Queue pending: {_embedding_queue.qsize()}\n"
@@ -665,10 +663,10 @@ async def call_tool(name: str, arguments: dict):
 
     # ========== DELETE ==========
     elif name == "memory_delete":
-        id = arguments.get("id", "")
+        mem_id = arguments.get("id", "")
         scope = arguments.get("scope", "project")
 
-        if not id:
+        if not mem_id:
             return [TextContent(type="text", text="Error: ID required.")]
 
         db_path = GLOBAL_DB_PATH if scope == "global" else get_project_db_path()
@@ -678,14 +676,14 @@ async def call_tool(name: str, arguments: dict):
         try:
             conn = init_db(db_path)
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM memories WHERE id = ?", (id,))
+            cursor.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
             deleted = cursor.rowcount
             conn.commit()
             conn.close()
 
             if deleted:
-                return [TextContent(type="text", text=f"✓ Memory {id} deleted.")]
-            return [TextContent(type="text", text=f"Memory {id} not found.")]
+                return [TextContent(type="text", text=f"Memory {mem_id} deleted.")]
+            return [TextContent(type="text", text=f"Memory {mem_id} not found.")]
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {e}")]
 
