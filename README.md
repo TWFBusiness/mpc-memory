@@ -93,21 +93,20 @@ memory_delete(id="abc123", scope="global")
 
 ### Claude Code
 
-File: `~/.claude/mcp.json`
+Use the CLI to add the MCP globally (available in all projects):
 
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "~/.mcp-memoria/.venv/bin/python",
-      "args": ["~/.mcp-memoria/server.py"],
-      "env": {
-        "MCP_MEMORY_EMBEDDING": "true"
-      }
-    }
-  }
-}
+```bash
+claude mcp add memory ~/.mcp-memoria/.venv/bin/python ~/.mcp-memoria/server.py --scope user -e MCP_MEMORY_EMBEDDING=true
 ```
+
+Then restart Claude Code.
+
+To verify:
+```bash
+claude mcp list
+```
+
+> **Note**: The `--scope user` flag makes the MCP available globally. Without it, the MCP would only be available in the current project.
 
 ### Cursor
 

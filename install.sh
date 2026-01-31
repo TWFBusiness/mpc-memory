@@ -38,26 +38,36 @@ fi
 echo ""
 echo "=== Installation complete! ==="
 echo ""
-echo "Add to your AI's MCP config:"
+
+# Auto-configure Claude Code if available
+if command -v claude &> /dev/null; then
+    read -p "Configure Claude Code automatically? [Y/n]: " CONFIGURE_CLAUDE
+    if [[ ! "$CONFIGURE_CLAUDE" =~ ^[Nn]$ ]]; then
+        echo "Adding MCP to Claude Code (global scope)..."
+        claude mcp add memory "$MCP_DIR/.venv/bin/python" "$MCP_DIR/server.py" --scope user -e MCP_MEMORY_EMBEDDING="$EMBEDDING_ENABLED" 2>/dev/null && \
+            echo "✓ Claude Code configured! Restart Claude Code to activate." || \
+            echo "⚠ Could not configure automatically. See manual instructions below."
+    fi
+fi
+
 echo ""
+echo "=== Configuration ==="
+echo ""
+echo "Claude Code (run this command):"
+echo "  claude mcp add memory $MCP_DIR/.venv/bin/python $MCP_DIR/server.py --scope user -e MCP_MEMORY_EMBEDDING=$EMBEDDING_ENABLED"
+echo ""
+echo "Cursor (~/.cursor/mcp.json):"
 echo "{"
 echo "  \"mcpServers\": {"
 echo "    \"memory\": {"
 echo "      \"command\": \"$MCP_DIR/.venv/bin/python\","
 echo "      \"args\": [\"$MCP_DIR/server.py\"],"
-echo "      \"env\": {"
-echo "        \"MCP_MEMORY_EMBEDDING\": \"$EMBEDDING_ENABLED\""
-echo "      }"
+echo "      \"env\": { \"MCP_MEMORY_EMBEDDING\": \"$EMBEDDING_ENABLED\" }"
 echo "    }"
 echo "  }"
 echo "}"
 echo ""
-echo "Config file locations:"
-echo "  - Claude Code: ~/.claude/mcp.json"
-echo "  - Cursor: ~/.cursor/mcp.json"
-echo "  - Continue: ~/.continue/config.json"
-echo ""
-echo "Available tools:"
+echo "=== Available tools ==="
 echo "  - memory_context: Auto-recall relevant context"
 echo "  - memory_search: Search memories"
 echo "  - memory_save: Save decisions/patterns"
