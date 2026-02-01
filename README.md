@@ -1,31 +1,37 @@
 # MCP Memory
 
-Persistent memory server for AI assistants with semantic search and two-layer context.
+Persistent memory server for AI assistants with semantic search and three-layer context.
 
 Works with any MCP-compatible AI: Claude Code, Cursor, Continue, Cline, and more.
 
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TWFBusiness/mpc-memoria/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/TWFBusiness/mpc-memory/main/install.sh | bash
 ```
 
 Or manually:
 
 ```bash
-git clone https://github.com/TWFBusiness/mpc-memoria.git ~/.mcp-memoria
+git clone https://github.com/TWFBusiness/mpc-memory.git ~/.mcp-memoria
 cd ~/.mcp-memoria
 ./install.sh
 ```
 
 ## How It Works
 
-### Two Memory Layers
+### Three Memory Layers
 
 | Layer | Location | Use |
 |-------|----------|-----|
-| **Global** | `~/.mcp-memoria/data/` | Personal patterns, preferences across all projects |
-| **Project** | `.mcp-memoria/` | Project-specific decisions |
+| **Global** | `~/.mcp-memoria/data/global.db` | Personal patterns, preferences across all projects |
+| **Project** | `.mcp-memoria/project.db` | Project-specific decisions |
+| **Personality** | `~/.mcp-memoria/data/personality.db` | Cross-project cache: ALL conversations, implementations, decisions |
+
+**Personality** is the "brain" that remembers everything across all projects and conversations. Use it to:
+- Find similar implementations from other projects
+- Remember past solutions and decisions
+- Maintain context even outside of projects (general queries)
 
 ### Smart Search
 
@@ -71,12 +77,34 @@ memory_save(
   tags="python,fastapi,async"
 )
 
+# Save implementation to personality (cross-project cache)
+memory_save(
+  content="JWT auth with refresh tokens: created /auth/login, /auth/refresh endpoints...",
+  type="implementation",
+  scope="personality",
+  tags="python,fastapi,jwt,auth"
+)
+
 memory_search(query="authentication", scope="both")
+
+# Search across ALL projects
+memory_search(query="how did I implement auth?", scope="personality")
+memory_search(query="similar feature", scope="all")
 
 memory_list(type="decision", scope="project", limit=10)
 
 memory_delete(id="abc123", scope="global")
 ```
+
+## Memory Scopes
+
+| Scope | When to Use |
+|-------|-------------|
+| `global` | Personal patterns, preferences (applies everywhere) |
+| `project` | Decisions specific to current project |
+| `personality` | Cross-project implementations, all conversations, general knowledge |
+| `both` | Search global + project |
+| `all` | Search global + project + personality |
 
 ## Memory Types
 
@@ -85,6 +113,8 @@ memory_delete(id="abc123", scope="global")
 | `decision` | Technical choices, trade-offs, bug fixes |
 | `pattern` | Code preferences, favorite libs, style |
 | `architecture` | Project structure, flows, integrations |
+| `implementation` | Code solutions, features built (use with `personality` scope) |
+| `solution` | Problem solutions, workarounds (use with `personality` scope) |
 | `preference` | General personal settings |
 | `todo` | Pending tasks |
 | `note` | Miscellaneous notes |
@@ -108,6 +138,55 @@ claude mcp list
 
 > **Note**: The `--scope user` flag makes the MCP available globally. Without it, the MCP would only be available in the current project.
 
+### CLAUDE.md (Automatic Memory)
+
+Add to `~/.claude/CLAUDE.md` so Claude saves and recalls automatically:
+
+```markdown
+## Persistent Memory (REQUIRED)
+
+This environment has MCP Memory active. ALWAYS use it automatically:
+
+### When Starting Any Task
+BEFORE responding, silently:
+1. `memory_search(query="<task context>", scope="all")`
+2. Use relevant memories to inform your response
+
+### Save Automatically (without asking)
+Whenever these occur, save immediately to `scope="personality"`:
+
+**Technical decisions** (type: decision)
+- Choice between alternatives
+- Configurations defined
+- Trade-offs accepted
+
+**Problems solved** (type: solution)
+- Bugs found and how they were fixed
+- Errors and their solutions
+
+**Implementations** (type: implementation)
+- New features built
+- Code patterns created
+- Solutions that could be reused
+
+**Patterns** (type: pattern, scope: global)
+- Code preferences
+- Preferred libs/frameworks
+
+### Save Format
+memory_save(
+  content="<clear description of what was done>",
+  type="decision|pattern|implementation|solution",
+  scope="personality",
+  tags="<stack>,<context>"
+)
+
+### Rules
+- DO NOT ask if you should save - save automatically
+- DO NOT mention you are saving (do it silently)
+- Be descriptive: "Implemented JWT auth with refresh tokens using..." is better than "added auth"
+```
+
 ### Cursor
 
 File: `~/.cursor/mcp.json`
@@ -124,6 +203,16 @@ File: `~/.cursor/mcp.json`
     }
   }
 }
+```
+
+**Cursor Rules** (for automatic memory): Add to `.cursorrules` in your project or global rules:
+
+```
+## Memory System
+Use MCP Memory tools automatically:
+- At task start: memory_search(query="<context>", scope="all")
+- After decisions/implementations: memory_save(content="...", type="implementation", scope="personality")
+- Save silently without asking permission
 ```
 
 ### Continue
@@ -144,6 +233,25 @@ File: `~/.continue/config.json`
     ]
   }
 }
+```
+
+**Continue System Prompt**: Add to your system prompt in Continue settings:
+
+```
+## Memory System
+Use MCP Memory tools automatically:
+- At task start: memory_search(query="<context>", scope="all")
+- After decisions/implementations: memory_save(content="...", type="implementation", scope="personality")
+- Save silently without asking permission
+```
+
+### Cline / Other MCP Clients
+
+Most MCP clients support similar configuration. Add the memory server and include in your system prompt:
+
+```
+Use MCP Memory tools: memory_search before tasks, memory_save after implementations.
+Scope "personality" saves cross-project. Save automatically without asking.
 ```
 
 ### Environment Variables
@@ -167,8 +275,9 @@ File: `~/.continue/config.json`
 ### Export
 
 ```bash
-# Memories
+# All memories
 cp ~/.mcp-memoria/data/global.db ~/backup/memory-global.db
+cp ~/.mcp-memoria/data/personality.db ~/backup/memory-personality.db
 
 # Project memories
 cp /path/to/project/.mcp-memoria/project.db ~/backup/project-x.db
@@ -178,6 +287,7 @@ cp /path/to/project/.mcp-memoria/project.db ~/backup/project-x.db
 
 ```bash
 cp ~/backup/memory-global.db ~/.mcp-memoria/data/global.db
+cp ~/backup/memory-personality.db ~/.mcp-memoria/data/personality.db
 ```
 
 ## File Structure
@@ -186,7 +296,8 @@ cp ~/backup/memory-global.db ~/.mcp-memoria/data/global.db
 ~/.mcp-memoria/
 ├── server.py          # MCP server
 ├── data/
-│   └── global.db      # SQLite - global memories
+│   ├── global.db      # SQLite - global memories (patterns, preferences)
+│   └── personality.db # SQLite - personality memories (all implementations, cross-project)
 └── .venv/             # Python virtual environment
 
 ~/your-project/

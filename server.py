@@ -2,9 +2,13 @@
 """
 MCP Memory - Persistent memory server for AI assistants
 
-Two layers:
-- Global: ~/.mcp-memoria/data/ (personal patterns, preferences)
-- Project: .mcp-memoria/ (project-specific decisions)
+Three layers:
+- Global: ~/.mcp-memoria/data/global.db (personal patterns, preferences)
+- Project: .mcp-memoria/project.db (project-specific decisions)
+- Personality: ~/.mcp-memoria/data/personality.db (cross-project implementations cache)
+
+Personality layer stores all implementations, solutions, and code patterns
+across all projects. Useful to check "have I done something similar before?"
 
 Smart architecture:
 - Search: FTS5 (instant) + embeddings (semantic, if available)
@@ -34,6 +38,7 @@ from mcp.types import Tool, TextContent
 
 GLOBAL_MEMORY_DIR = Path.home() / ".mcp-memoria" / "data"
 GLOBAL_DB_PATH = GLOBAL_MEMORY_DIR / "global.db"
+PERSONALITY_DB_PATH = GLOBAL_MEMORY_DIR / "personality.db"
 
 # Embedding config
 EMBEDDING_ENABLED = os.environ.get("MCP_MEMORY_EMBEDDING", "true").lower() == "true"
@@ -419,14 +424,15 @@ async def list_tools():
         ),
         Tool(
             name="memory_search",
-            description="Search specific memories when you need detailed information about past decisions, patterns, or preferences.",
+            description="Search specific memories when you need detailed information about past decisions, patterns, or preferences. Use 'personality' scope to find similar implementations from other projects.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search term"},
                     "scope": {
                         "type": "string",
-                        "enum": ["global", "project", "both"],
+                        "enum": ["global", "project", "personality", "both", "all"],
+                        "description": "'both'=global+project, 'all'=global+project+personality, 'personality'=cross-project implementations only",
                         "default": "both"
                     },
                     "limit": {"type": "integer", "default": 5}
@@ -436,38 +442,42 @@ async def list_tools():
         ),
         Tool(
             name="memory_save",
-            description="Save important decision, pattern, or preference. Use after: (1) making architecture decisions, (2) defining code patterns, (3) learning user preferences.",
+            description="Save important decision, pattern, or implementation. Use after: (1) making architecture decisions, (2) defining code patterns, (3) learning user preferences, (4) implementing new features (use scope='personality' + type='implementation').",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {"type": "string", "description": "What to save"},
                     "type": {
                         "type": "string",
-                        "enum": ["decision", "pattern", "preference", "architecture", "todo", "note"]
+                        "enum": ["decision", "pattern", "preference", "architecture", "implementation", "solution", "todo", "note"],
+                        "description": "'implementation'/'solution' for code/features (recommended with scope='personality')"
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["global", "project"],
+                        "enum": ["global", "project", "personality"],
+                        "description": "'personality' saves cross-project (for implementations/solutions)",
                         "default": "project"
                     },
-                    "tags": {"type": "string", "description": "Comma-separated tags"}
+                    "tags": {"type": "string", "description": "Comma-separated tags (e.g., 'python,fastapi,auth')"},
+                    "project_name": {"type": "string", "description": "Project name (auto-detected if not provided, useful for personality scope)"}
                 },
                 "required": ["content", "type"]
             }
         ),
         Tool(
             name="memory_list",
-            description="List recent memories. Useful to review decision history.",
+            description="List recent memories. Useful to review decision history or find past implementations.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": ["decision", "pattern", "preference", "architecture", "todo", "note"]
+                        "enum": ["decision", "pattern", "preference", "architecture", "implementation", "solution", "todo", "note"]
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["global", "project", "both"],
+                        "enum": ["global", "project", "personality", "both", "all"],
+                        "description": "'both'=global+project, 'all'=includes personality",
                         "default": "both"
                     },
                     "limit": {"type": "integer", "default": 10}
@@ -486,7 +496,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "scope": {"type": "string", "enum": ["global", "project"], "default": "project"}
+                    "scope": {"type": "string", "enum": ["global", "project", "personality"], "default": "project"}
                 },
                 "required": ["id"]
             }
@@ -503,8 +513,8 @@ async def call_tool(name: str, arguments: dict):
         query = arguments.get("query", "")
         results = []
 
-        for scope, db_path in [("global", GLOBAL_DB_PATH), ("project", get_project_db_path())]:
-            if db_path and (db_path.exists() or scope == "global"):
+        for scope, db_path in [("global", GLOBAL_DB_PATH), ("project", get_project_db_path()), ("personality", PERSONALITY_DB_PATH)]:
+            if db_path and (db_path.exists() or scope in ["global", "personality"]):
                 try:
                     conn = init_db(db_path)
                     for r in search_hybrid(conn, query, limit=5):
@@ -535,27 +545,29 @@ async def call_tool(name: str, arguments: dict):
 
         results = []
 
-        if scope in ["global", "both"]:
-            try:
-                conn = init_db(GLOBAL_DB_PATH)
-                for r in search_hybrid(conn, query, limit):
-                    r["scope"] = "global"
-                    results.append(r)
-                conn.close()
-            except Exception as e:
-                print(f"[Memory] Global search error: {e}", file=sys.stderr)
+        # Define which DBs to search
+        dbs_to_search = []
+        if scope == "global":
+            dbs_to_search = [("global", GLOBAL_DB_PATH)]
+        elif scope == "project":
+            dbs_to_search = [("project", get_project_db_path())]
+        elif scope == "personality":
+            dbs_to_search = [("personality", PERSONALITY_DB_PATH)]
+        elif scope == "both":
+            dbs_to_search = [("global", GLOBAL_DB_PATH), ("project", get_project_db_path())]
+        elif scope == "all":
+            dbs_to_search = [("global", GLOBAL_DB_PATH), ("project", get_project_db_path()), ("personality", PERSONALITY_DB_PATH)]
 
-        if scope in ["project", "both"]:
-            project_db = get_project_db_path()
-            if project_db:
+        for scope_name, db_path in dbs_to_search:
+            if db_path and (db_path.exists() or scope_name in ["global", "personality"]):
                 try:
-                    conn = init_db(project_db)
+                    conn = init_db(db_path)
                     for r in search_hybrid(conn, query, limit):
-                        r["scope"] = "project"
+                        r["scope"] = scope_name
                         results.append(r)
                     conn.close()
                 except Exception as e:
-                    print(f"[Memory] Project search error: {e}", file=sys.stderr)
+                    print(f"[Memory] {scope_name} search error: {e}", file=sys.stderr)
 
         results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
         results = results[:limit]
@@ -579,19 +591,32 @@ async def call_tool(name: str, arguments: dict):
         mem_type = arguments.get("type", "note")
         scope = arguments.get("scope", "project")
         tags = arguments.get("tags", "")
+        project_name = arguments.get("project_name", "")
 
         if not content:
             return [TextContent(type="text", text="Error: empty content.")]
 
-        db_path = GLOBAL_DB_PATH if scope == "global" else get_project_db_path()
-        if not db_path:
-            return [TextContent(type="text", text="Error: project not detected.")]
+        # Determine database path based on scope
+        if scope == "global":
+            db_path = GLOBAL_DB_PATH
+        elif scope == "personality":
+            db_path = PERSONALITY_DB_PATH
+            # Add project context to personality memories
+            if not project_name:
+                project_dir = get_project_dir()
+                project_name = project_dir.name if project_dir else "no-project"
+            if project_name and project_name not in tags:
+                tags = f"{tags},{project_name}" if tags else project_name
+        else:  # project
+            db_path = get_project_db_path()
+            if not db_path:
+                return [TextContent(type="text", text="Error: project not detected. Use scope='personality' or 'global' for non-project context.")]
 
         try:
             result = save_memory(db_path, mem_type, content, tags)
             return [TextContent(
                 type="text",
-                text=f"Memory saved ({scope})\n- Type: {mem_type}\n- ID: {result['id']}\n- Embedding: {'queued' if EMBEDDING_ENABLED else 'disabled'}"
+                text=f"Memory saved ({scope})\n- Type: {mem_type}\n- ID: {result['id']}\n- Tags: {tags or 'none'}\n- Embedding: {'queued' if EMBEDDING_ENABLED else 'disabled'}"
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error: {e}")]
@@ -604,27 +629,29 @@ async def call_tool(name: str, arguments: dict):
 
         results = []
 
-        if scope in ["global", "both"]:
-            try:
-                conn = init_db(GLOBAL_DB_PATH)
-                for r in list_memories(conn, mem_type, limit):
-                    r["scope"] = "global"
-                    results.append(r)
-                conn.close()
-            except Exception as e:
-                print(f"[Memory] Global list error: {e}", file=sys.stderr)
+        # Define which DBs to list
+        dbs_to_list = []
+        if scope == "global":
+            dbs_to_list = [("global", GLOBAL_DB_PATH)]
+        elif scope == "project":
+            dbs_to_list = [("project", get_project_db_path())]
+        elif scope == "personality":
+            dbs_to_list = [("personality", PERSONALITY_DB_PATH)]
+        elif scope == "both":
+            dbs_to_list = [("global", GLOBAL_DB_PATH), ("project", get_project_db_path())]
+        elif scope == "all":
+            dbs_to_list = [("global", GLOBAL_DB_PATH), ("project", get_project_db_path()), ("personality", PERSONALITY_DB_PATH)]
 
-        if scope in ["project", "both"]:
-            project_db = get_project_db_path()
-            if project_db:
+        for scope_name, db_path in dbs_to_list:
+            if db_path and (db_path.exists() or scope_name in ["global", "personality"]):
                 try:
-                    conn = init_db(project_db)
+                    conn = init_db(db_path)
                     for r in list_memories(conn, mem_type, limit):
-                        r["scope"] = "project"
+                        r["scope"] = scope_name
                         results.append(r)
                     conn.close()
                 except Exception as e:
-                    print(f"[Memory] Project list error: {e}", file=sys.stderr)
+                    print(f"[Memory] {scope_name} list error: {e}", file=sys.stderr)
 
         if not results:
             return [TextContent(type="text", text="No memories found.")]
@@ -632,6 +659,8 @@ async def call_tool(name: str, arguments: dict):
         output = f"## Memories ({len(results)})\n\n"
         for r in results:
             output += f"- **[{r['scope']}] {r['type']}**: {r['content'][:80]}{'...' if len(r['content']) > 80 else ''}\n"
+            if r.get('tags'):
+                output += f"  _Tags: {r['tags']}_\n"
             output += f"  `{r['id']}` | {r['created_at']}\n\n"
 
         return [TextContent(type="text", text=output)]
@@ -640,12 +669,21 @@ async def call_tool(name: str, arguments: dict):
     elif name == "memory_stats":
         output = "## Memory Statistics\n\n"
 
+        # Global
         global_stats = get_stats(GLOBAL_DB_PATH)
         output += f"**Global** ({GLOBAL_DB_PATH}):\n"
         output += f"- Total: {global_stats['total']}\n"
         output += f"- Indexed (embedding): {global_stats['indexed']}\n"
         output += f"- By type: {global_stats['by_type']}\n\n"
 
+        # Personality
+        personality_stats = get_stats(PERSONALITY_DB_PATH)
+        output += f"**Personality** ({PERSONALITY_DB_PATH}):\n"
+        output += f"- Total: {personality_stats['total']}\n"
+        output += f"- Indexed (embedding): {personality_stats['indexed']}\n"
+        output += f"- By type: {personality_stats['by_type']}\n\n"
+
+        # Project
         project_db = get_project_db_path()
         if project_db and project_db.exists():
             proj_stats = get_stats(project_db)
@@ -669,9 +707,14 @@ async def call_tool(name: str, arguments: dict):
         if not mem_id:
             return [TextContent(type="text", text="Error: ID required.")]
 
-        db_path = GLOBAL_DB_PATH if scope == "global" else get_project_db_path()
-        if not db_path:
-            return [TextContent(type="text", text="Error: project not detected.")]
+        if scope == "global":
+            db_path = GLOBAL_DB_PATH
+        elif scope == "personality":
+            db_path = PERSONALITY_DB_PATH
+        else:
+            db_path = get_project_db_path()
+            if not db_path:
+                return [TextContent(type="text", text="Error: project not detected.")]
 
         try:
             conn = init_db(db_path)
@@ -699,12 +742,14 @@ async def main():
     print("[Memory] ============================================", file=sys.stderr)
     print("[Memory] MCP Memory Server Starting", file=sys.stderr)
     print(f"[Memory] Global DB: {GLOBAL_DB_PATH}", file=sys.stderr)
+    print(f"[Memory] Personality DB: {PERSONALITY_DB_PATH}", file=sys.stderr)
     print(f"[Memory] Embeddings: {'enabled' if EMBEDDING_ENABLED else 'disabled'}", file=sys.stderr)
     print(f"[Memory] Model: {EMBEDDING_MODEL}", file=sys.stderr)
     print("[Memory] ============================================", file=sys.stderr)
 
-    # Initialize global database
+    # Initialize databases
     init_db(GLOBAL_DB_PATH)
+    init_db(PERSONALITY_DB_PATH)
 
     # Start embedding worker in background
     start_embedding_worker()
