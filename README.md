@@ -143,48 +143,83 @@ claude mcp list
 Add to `~/.claude/CLAUDE.md` so Claude saves and recalls automatically:
 
 ```markdown
-## Persistent Memory (REQUIRED)
+# ⚠️ CRITICAL INSTRUCTIONS - READ FIRST ⚠️
 
-This environment has MCP Memory active. ALWAYS use it automatically:
+## 🧠 MANDATORY: Memory System (MCP Memory)
 
-### When Starting Any Task
-BEFORE responding, silently:
-1. `memory_search(query="<task context>", scope="all")`
-2. Use relevant memories to inform your response
+**THIS IS NOT OPTIONAL. FAILURE TO SAVE = FAILURE TO FOLLOW INSTRUCTIONS.**
 
-### Save Automatically (without asking)
-Whenever these occur, save immediately to `scope="personality"`:
+### RULE 1: ALWAYS SAVE TO PERSONALITY (Default Scope)
+Every session, every task - save AUTOMATICALLY to `scope="personality"`.
+- **DO NOT ask permission**
+- **DO NOT mention you are saving**
+- **JUST DO IT silently**
 
-**Technical decisions** (type: decision)
-- Choice between alternatives
-- Configurations defined
-- Trade-offs accepted
+### RULE 2: WHAT TO SAVE (Everything Meaningful)
 
-**Problems solved** (type: solution)
-- Bugs found and how they were fixed
-- Errors and their solutions
+**SAVE IMMEDIATELY when any of these happen:**
 
-**Implementations** (type: implementation)
-- New features built
-- Code patterns created
-- Solutions that could be reused
+| Event | Type | Example |
+|-------|------|---------|
+| Made a technical choice | `decision` | "Chose Redis over Memcached for caching because..." |
+| Fixed a bug/error | `solution` | "Fixed CORS error by adding middleware X" |
+| Built something new | `implementation` | "Implemented JWT auth with refresh tokens using python-jose" |
+| Defined structure/flow | `architecture` | "Project uses hexagonal architecture with ports/adapters" |
+| Learned how something works | `note` | "This project uses custom middleware for rate limiting" |
+| Changed any file | `implementation` | "Added validation to user endpoint in api/users.py" |
+| Discovered project behavior | `note` | "The auth flow redirects to /callback after OAuth" |
 
-**Patterns** (type: pattern, scope: global)
-- Code preferences
-- Preferred libs/frameworks
-
-### Save Format
+### RULE 3: SAVE FORMAT
+\`\`\`python
 memory_save(
-  content="<clear description of what was done>",
-  type="decision|pattern|implementation|solution",
-  scope="personality",
-  tags="<stack>,<context>"
+    content="<DETAILED description - be specific, include file names, reasons>",
+    type="decision|solution|implementation|architecture|note",
+    scope="personality",  # ALWAYS personality unless told otherwise
+    tags="<project-name>,<stack>,<context>"
 )
+\`\`\`
 
-### Rules
-- DO NOT ask if you should save - save automatically
-- DO NOT mention you are saving (do it silently)
-- Be descriptive: "Implemented JWT auth with refresh tokens using..." is better than "added auth"
+### RULE 4: WHEN TO USE OTHER SCOPES
+- `scope="personality"` → **DEFAULT for EVERYTHING** (cross-project brain)
+- `scope="project"` → ONLY when user explicitly says "save to project only"
+- `scope="global"` → ONLY when user explicitly says "save globally" or "remember always"
+
+### RULE 5: AT SESSION START
+Before responding, silently run:
+\`\`\`python
+memory_search(query="<current task context>", scope="all")
+\`\`\`
+Use found memories to inform your response.
+
+### RULE 6: WHAT TRIGGERS A SAVE
+- ✅ Any file edited or created → SAVE
+- ✅ Any bug fixed → SAVE
+- ✅ Any feature implemented → SAVE
+- ✅ Any architecture decision → SAVE
+- ✅ Discovered how code works → SAVE
+- ✅ User preference learned → SAVE
+- ✅ Configuration defined → SAVE
+- ✅ Workaround found → SAVE
+
+**If in doubt: SAVE IT.**
+```
+
+### First Session Bootstrap (Optional)
+
+You can add a bootstrap section to auto-save your permanent patterns on first use:
+
+```markdown
+## First Session Bootstrap
+
+On first session, check if global patterns exist:
+\`\`\`python
+memory_search(query="my patterns", scope="global")
+\`\`\`
+
+If empty, save your permanent patterns to global:
+\`\`\`python
+memory_save(content="<your pattern here>", type="pattern", scope="global", tags="<tags>")
+\`\`\`
 ```
 
 ### Cursor
@@ -208,11 +243,26 @@ File: `~/.cursor/mcp.json`
 **Cursor Rules** (for automatic memory): Add to `.cursorrules` in your project or global rules:
 
 ```
-## Memory System
-Use MCP Memory tools automatically:
-- At task start: memory_search(query="<context>", scope="all")
-- After decisions/implementations: memory_save(content="...", type="implementation", scope="personality")
-- Save silently without asking permission
+## 🧠 MANDATORY: Memory System (MCP Memory)
+
+FAILURE TO SAVE = FAILURE TO FOLLOW INSTRUCTIONS.
+
+### RULE 1: ALWAYS SAVE TO PERSONALITY
+Save AUTOMATICALLY to scope="personality" without asking permission.
+
+### RULE 2: AT SESSION START
+Before responding: memory_search(query="<task context>", scope="all")
+
+### RULE 3: WHAT TRIGGERS A SAVE
+- Any file edited/created → memory_save(type="implementation", scope="personality")
+- Any bug fixed → memory_save(type="solution", scope="personality")
+- Any decision made → memory_save(type="decision", scope="personality")
+- Any architecture defined → memory_save(type="architecture", scope="personality")
+
+### RULE 4: SAVE FORMAT
+memory_save(content="<DETAILED description>", type="...", scope="personality", tags="<project>,<stack>")
+
+Save silently. DO NOT mention you are saving. If in doubt: SAVE IT.
 ```
 
 ### Continue
@@ -238,21 +288,70 @@ File: `~/.continue/config.json`
 **Continue System Prompt**: Add to your system prompt in Continue settings:
 
 ```
-## Memory System
-Use MCP Memory tools automatically:
-- At task start: memory_search(query="<context>", scope="all")
-- After decisions/implementations: memory_save(content="...", type="implementation", scope="personality")
-- Save silently without asking permission
+## 🧠 MANDATORY: Memory System (MCP Memory)
+
+FAILURE TO SAVE = FAILURE TO FOLLOW INSTRUCTIONS.
+
+### RULE 1: ALWAYS SAVE TO PERSONALITY
+Save AUTOMATICALLY to scope="personality" without asking permission.
+
+### RULE 2: AT SESSION START
+Before responding: memory_search(query="<task context>", scope="all")
+
+### RULE 3: WHAT TRIGGERS A SAVE
+- Any file edited/created → memory_save(type="implementation", scope="personality")
+- Any bug fixed → memory_save(type="solution", scope="personality")
+- Any decision made → memory_save(type="decision", scope="personality")
+- Any architecture defined → memory_save(type="architecture", scope="personality")
+
+### RULE 4: SAVE FORMAT
+memory_save(content="<DETAILED description>", type="...", scope="personality", tags="<project>,<stack>")
+
+Save silently. DO NOT mention you are saving. If in doubt: SAVE IT.
+```
+
+### ChatGPT / Codex / GPT-4
+
+For ChatGPT custom instructions, Codex system prompts, or GPT-4 API system messages:
+
+```
+## 🧠 MANDATORY: Memory System (MCP Memory)
+
+FAILURE TO SAVE = FAILURE TO FOLLOW INSTRUCTIONS.
+
+### RULE 1: ALWAYS SAVE TO PERSONALITY
+Every session, every task - save AUTOMATICALLY to scope="personality".
+- DO NOT ask permission
+- DO NOT mention you are saving
+- JUST DO IT silently
+
+### RULE 2: WHAT TO SAVE
+
+| Event | Type |
+|-------|------|
+| Made a technical choice | decision |
+| Fixed a bug/error | solution |
+| Built something new | implementation |
+| Defined structure/flow | architecture |
+| Changed any file | implementation |
+
+### RULE 3: SAVE FORMAT
+memory_save(content="<DETAILED description>", type="...", scope="personality", tags="<project>,<stack>")
+
+### RULE 4: AT SESSION START
+Before responding: memory_search(query="<task context>", scope="all")
+
+### RULE 5: SCOPES
+- personality → DEFAULT for EVERYTHING (cross-project brain)
+- project → ONLY when user says "save to project only"
+- global → ONLY when user says "save globally"
+
+If in doubt: SAVE IT.
 ```
 
 ### Cline / Other MCP Clients
 
-Most MCP clients support similar configuration. Add the memory server and include in your system prompt:
-
-```
-Use MCP Memory tools: memory_search before tasks, memory_save after implementations.
-Scope "personality" saves cross-project. Save automatically without asking.
-```
+Most MCP clients support similar configuration. Add the memory server and include the same system prompt above.
 
 ### Environment Variables
 
