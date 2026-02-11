@@ -2,30 +2,40 @@
 """
 Hook para Claude Code: salva conversa automaticamente no MCP Memory (personality)
 
-Captura eventos:
-- UserPromptSubmit: salva a pergunta do usuário
-- Stop: salva resumo do que foi feito (tools usadas)
+Melhorias v2:
+- Uma memória por sessão (UPSERT, não INSERT duplicado)
+- Formato estruturado: extrai ferramentas, arquivos, ações
+- Limite de 20 turnos por sessão
+- ID determinístico baseado no session_id
+- Extração de file paths mencionados
 
-Os dados são salvos no personality database para persistir entre sessões.
+Captura eventos:
+- UserPromptSubmit: acumula pergunta do usuário
+- Stop: atualiza memória da sessão com resumo
 """
 
 import sys
 import json
+import re
 import sqlite3
 import hashlib
 from datetime import datetime
 from pathlib import Path
-import os
 
 # Database path
 PERSONALITY_DB = Path.home() / ".mcp-memoria" / "data" / "personality.db"
 
-# Session file to accumulate conversation
-SESSION_FILE = Path.home() / ".claude" / "mcp-memoria" / "hooks" / ".current_session.json"
+# Session file para acumular conversa
+SESSION_FILE = (
+    Path.home() / ".claude" / "mcp-memoria" / "hooks" / ".current_session.json"
+)
+
+# Limite de turnos por sessão
+MAX_TURNS = 20
 
 
 def init_db():
-    """Initialize database if needed"""
+    """Inicializa database se necessário"""
     PERSONALITY_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(PERSONALITY_DB))
     cursor = conn.cursor()
@@ -42,7 +52,7 @@ def init_db():
         )
     """)
 
-    # FTS5 for search
+    # FTS5
     try:
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -50,137 +60,232 @@ def init_db():
             )
         """)
         cursor.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, content, tags) VALUES (NEW.rowid, NEW.content, NEW.tags);
+            CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories
+            BEGIN
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (NEW.rowid, NEW.content, NEW.tags);
             END
         """)
-    except:
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories
+            BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES('delete', OLD.rowid, OLD.content, OLD.tags);
+            END
+        """)
+        cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories
+            BEGIN
+                INSERT INTO memories_fts(memories_fts, rowid, content, tags)
+                VALUES('delete', OLD.rowid, OLD.content, OLD.tags);
+                INSERT INTO memories_fts(rowid, content, tags)
+                VALUES (NEW.rowid, NEW.content, NEW.tags);
+            END
+        """)
+    except Exception:
         pass
 
     conn.commit()
     return conn
 
 
-def generate_id(content: str) -> str:
-    """Generate unique ID"""
-    hash_input = f"conversation:{content}:{datetime.now().isoformat()}"
-    return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+def session_memory_id(session_id: str) -> str:
+    """Gera ID determinístico a partir do session_id (uma memória por sessão)"""
+    return hashlib.sha256(f"session:{session_id}".encode()).hexdigest()[:16]
 
 
 def load_session():
-    """Load current session data"""
+    """Carrega dados da sessão atual"""
     if SESSION_FILE.exists():
         try:
             with open(SESSION_FILE) as f:
                 return json.load(f)
-        except:
+        except Exception:
             pass
-    return {"turns": [], "session_id": "", "project": ""}
+    return {
+        "turns": [], "session_id": "", "project": "",
+        "tools": [], "files": []
+    }
 
 
 def save_session(data):
-    """Save session data"""
+    """Salva dados da sessão"""
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(SESSION_FILE, "w") as f:
         json.dump(data, f)
 
 
-def save_to_memory(content: str, tags: str = ""):
-    """Save to personality database"""
+def extract_files(text: str) -> list:
+    """Extrai paths de arquivo do texto"""
+    patterns = re.findall(r'(?:/[\w._-]+)+\.\w+', text)
+    return list(set(patterns))[:20]
+
+
+def build_session_content(session: dict) -> str:
+    """Monta conteúdo estruturado a partir dos dados da sessão"""
+    project = session.get("project", "unknown")
+    turns = session.get("turns", [])
+    all_tools = sorted(set(session.get("tools", [])))
+    all_files = sorted(set(session.get("files", [])))
+
+    # Extrai prompts do usuário (deduplicados)
+    user_prompts = []
+    seen = set()
+    for turn in turns:
+        if turn.get("role") == "user":
+            content = turn.get("content", "")
+            key = content[:50].lower()
+            if key not in seen and len(content) > 5:
+                seen.add(key)
+                user_prompts.append(content[:300])
+
+    # Monta conteúdo
+    lines = [f"[{project}] Session ({len(turns)} turns)"]
+
+    if all_tools:
+        lines.append(f"Tools: {', '.join(all_tools[:20])}")
+
+    if all_files:
+        lines.append(f"Files: {', '.join(all_files[:15])}")
+
+    if user_prompts:
+        lines.append("Topics:")
+        for p in user_prompts[:10]:
+            lines.append(f"  - {p}")
+
+    return "\n".join(lines)
+
+
+def save_to_db(session: dict):
+    """Salva/atualiza memória da sessão no database (UPSERT)"""
+    session_id = session.get("session_id", "")
+    if not session_id:
+        return None
+
+    project = session.get("project", "unknown")
+    mem_id = session_memory_id(session_id)
+    content = build_session_content(session)
+    tags = f"conversation,claude-code,{project},auto-saved"
+
     conn = init_db()
     cursor = conn.cursor()
 
-    mem_id = generate_id(content)
+    # Verifica se memória desta sessão já existe
+    cursor.execute("SELECT id FROM memories WHERE id = ?", (mem_id,))
+    exists = cursor.fetchone()
 
-    cursor.execute("""
-        INSERT OR REPLACE INTO memories (id, type, content, tags, updated_at)
-        VALUES (?, 'conversation', ?, ?, CURRENT_TIMESTAMP)
-    """, (mem_id, content, tags))
+    if exists:
+        # Atualiza (UPSERT) - limpa embedding pra ser re-indexado
+        cursor.execute(
+            "UPDATE memories SET content = ?, tags = ?, "
+            "updated_at = CURRENT_TIMESTAMP, embedding = NULL "
+            "WHERE id = ?",
+            (content, tags, mem_id)
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO memories (id, type, content, tags) "
+            "VALUES (?, 'conversation', ?, ?)",
+            (mem_id, content, tags)
+        )
 
     conn.commit()
     conn.close()
-
     return mem_id
 
 
 def handle_user_prompt(hook_data):
-    """Handle UserPromptSubmit event - save user's question"""
+    """Trata evento UserPromptSubmit - captura pergunta do usuário"""
     session_id = hook_data.get("session_id", "unknown")
     cwd = hook_data.get("cwd", "")
     project_name = Path(cwd).name if cwd else "no-project"
-
-    # Get user prompt from hook data
     prompt = hook_data.get("prompt", "")
 
     if not prompt:
         return
 
-    # Load or create session
     session = load_session()
 
-    # Reset if new session
+    # Reset se nova sessão
     if session.get("session_id") != session_id:
-        session = {"turns": [], "session_id": session_id, "project": project_name}
+        session = {
+            "turns": [], "session_id": session_id,
+            "project": project_name, "tools": [], "files": []
+        }
 
-    # Add user turn
+    # Extrai file paths do prompt
+    files = extract_files(prompt)
+    session.setdefault("files", [])
+    for f in files:
+        if f not in session["files"]:
+            session["files"].append(f)
+
+    # Adiciona turno do usuário
     session["turns"].append({
         "role": "user",
-        "content": prompt[:1000],  # Truncate if too long
+        "content": prompt[:500],
         "timestamp": datetime.now().isoformat()
     })
 
+    # Mantém apenas últimos MAX_TURNS
+    if len(session["turns"]) > MAX_TURNS:
+        session["turns"] = session["turns"][-MAX_TURNS:]
+
     save_session(session)
-    print(f"[Memory Hook] Captured user prompt ({len(prompt)} chars)", file=sys.stderr)
+    print(
+        f"[Memory Hook] Captured user prompt ({len(prompt)} chars)",
+        file=sys.stderr
+    )
 
 
 def handle_stop(hook_data):
-    """Handle Stop event - save conversation summary"""
+    """Trata evento Stop - atualiza memória da sessão"""
     session_id = hook_data.get("session_id", "unknown")
     cwd = hook_data.get("cwd", "")
     project_name = Path(cwd).name if cwd else "no-project"
 
-    # Get tools used
+    # Tools usadas
     tools_used = hook_data.get("stop_hook_active_tools", [])
-    tool_names = [t.get("name", "unknown") for t in tools_used] if tools_used else []
+    tool_names = [
+        t.get("name", "unknown") for t in tools_used
+    ] if tools_used else []
 
-    # Load session
     session = load_session()
 
-    # Add assistant turn
-    assistant_summary = []
+    # Atualiza lista de tools
+    session.setdefault("tools", [])
+    for t in tool_names:
+        if t not in session["tools"]:
+            session["tools"].append(t)
+
+    # Adiciona turno do assistente
+    assistant_info = []
     if tool_names:
-        assistant_summary.append(f"Tools: {', '.join(tool_names)}")
+        assistant_info.append(f"Tools: {', '.join(tool_names)}")
 
     session["turns"].append({
         "role": "assistant",
-        "content": " | ".join(assistant_summary) if assistant_summary else "Responded",
+        "content": " | ".join(assistant_info) if assistant_info else "Responded",
         "timestamp": datetime.now().isoformat()
     })
 
-    # Build conversation content
-    turns_text = []
-    for turn in session.get("turns", [])[-10:]:  # Last 10 turns
-        role = turn.get("role", "?")
-        content = turn.get("content", "")
-        turns_text.append(f"[{role}] {content}")
+    # Mantém apenas últimos MAX_TURNS
+    if len(session["turns"]) > MAX_TURNS:
+        session["turns"] = session["turns"][-MAX_TURNS:]
 
-    if not turns_text:
-        return
-
-    content = f"[{project_name}] Session {session_id[:8]}\n" + "\n".join(turns_text)
-    tags = f"conversation,claude-code,{project_name},auto-saved"
-
-    mem_id = save_to_memory(content, tags)
-
-    # Save updated session
+    # Salva/atualiza no database (uma memória por sessão)
+    mem_id = save_to_db(session)
     save_session(session)
 
-    print(f"[Memory Hook] Saved conversation {mem_id} ({len(session['turns'])} turns)", file=sys.stderr)
+    print(
+        f"[Memory Hook] Updated session memory {mem_id} "
+        f"({len(session['turns'])} turns)",
+        file=sys.stderr
+    )
 
 
 def main():
     try:
-        # Read hook data from stdin
         input_data = sys.stdin.read()
 
         if not input_data.strip():
@@ -193,14 +298,12 @@ def main():
             handle_user_prompt(hook_data)
         elif event_name == "Stop":
             handle_stop(hook_data)
-        else:
-            print(f"[Memory Hook] Unknown event: {event_name}", file=sys.stderr)
 
     except json.JSONDecodeError:
         sys.exit(0)
     except Exception as e:
         print(f"[Memory Hook] Error: {e}", file=sys.stderr)
-        sys.exit(0)  # Don't block Claude on errors
+        sys.exit(0)  # Não bloqueia Claude em caso de erro
 
 
 if __name__ == "__main__":
